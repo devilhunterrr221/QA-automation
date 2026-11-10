@@ -6,7 +6,7 @@
 | **2. n8n API integration workflow** | [`task2/Task2_Workflow_NamanMalhotra.json`](task2/Task2_Workflow_NamanMalhotra.json) · [`task2/README.md`](task2/README.md) · [`task2/screenshots/`](task2/screenshots) |
 | **Bonus. Uptime monitor** | [`bonus/Bonus_UptimeMonitor_NamanMalhotra.json`](bonus/Bonus_UptimeMonitor_NamanMalhotra.json) · [`bonus/README.md`](bonus/README.md) · `bonus/*.png` |
 
-**Walkthrough video:** _(Loom link)_
+**Walkthrough video:** [Watch the walkthrough](https://drive.google.com/file/d/1O0rNIDoOSC5jzWqPXhqEnI20w4aydoUk/view?usp=sharing)
 
 ## Summary of work
 
