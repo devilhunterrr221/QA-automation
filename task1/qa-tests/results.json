@@ -1,0 +1,236 @@
+{
+  "run": "mwas9rbg",
+  "app": "https://demo.realworld.show",
+  "api": "https://api.realworld.show/api",
+  "when": "2026-11-10T14:28:46.574Z",
+  "results": [
+    {
+      "id": "S1",
+      "name": "Sign-up happy path",
+      "status": "PASS",
+      "detail": "Registered and redirected home, header shows \"qa_a_mwas9rbg\""
+    },
+    {
+      "id": "S2",
+      "name": "Sign-up accepts 1-character password",
+      "status": "ISSUE",
+      "detail": "POST /users with password \"1\" → HTTP 201"
+    },
+    {
+      "id": "S3",
+      "name": "Username validation (blank / HTML / 300 chars)",
+      "status": "ISSUE",
+      "detail": "whitespace-only → 201, \"<b>qa</b>…\" → 201, 300-char → 422"
+    },
+    {
+      "id": "S5",
+      "name": "Email without a TLD (user@localhost) is accepted",
+      "status": "INFO",
+      "detail": "→ HTTP 201"
+    },
+    {
+      "id": "L1",
+      "name": "Wrong password shows a clear error",
+      "status": "PASS",
+      "detail": "UI message: \"credentials invalid\""
+    },
+    {
+      "id": "L2",
+      "name": "Login happy path",
+      "status": "PASS",
+      "detail": "landed on /; header shows qa_a_mwas9rbg"
+    },
+    {
+      "id": "L4",
+      "name": "Signing in on a 2nd browser logs the 1st browser out without warning",
+      "status": "ISSUE",
+      "detail": "after user A logged in elsewhere, the original tab's token → GET /user HTTP 401; opening /settings → /login"
+    },
+    {
+      "id": "A1",
+      "name": "Create article happy path",
+      "status": "PASS",
+      "detail": "published at /article/qa-article-mwas9rbg"
+    },
+    {
+      "id": "A2",
+      "name": "Tags are not trimmed or de-duplicated",
+      "status": "ISSUE",
+      "detail": "typing \"qa\", \" qa\", \"qa \", \"QA\" in the editor → 4 separate tag pills; published article shows tags [\"qa\", \"QA\", \"qa\", \"testing\"]"
+    },
+    {
+      "id": "A3",
+      "name": "Empty article: no client-side validation, raw server message",
+      "status": "ISSUE",
+      "detail": "Publish button is always enabled; empty submit round-trips to API, UI shows: \"title can't be blank; description can't be blank; body can't be blank\""
+    },
+    {
+      "id": "A4",
+      "name": "Stored XSS via title/description/body markdown",
+      "status": "PASS",
+      "detail": "payloads rendered inert (Angular sanitiser strips onerror/javascript:)"
+    },
+    {
+      "id": "A5",
+      "name": "Long title (≈250 chars) cannot be published",
+      "status": "ISSUE",
+      "detail": "publish failed, UI shows: \"body title is a string of less than 100 chars\"; no max-length hint in the form"
+    },
+    {
+      "id": "A6",
+      "name": "Oversized article: misleading \"check your internet\" error",
+      "status": "ISSUE",
+      "detail": "~2.4 MB body → API HTTP null; UI shows: \"network Unable to connect. Please check your internet connection.\""
+    },
+    {
+      "id": "A7",
+      "name": "Double-click on Publish creates duplicates",
+      "status": "ISSUE",
+      "detail": "2 POST /articles request(s) sent"
+    },
+    {
+      "id": "E1",
+      "name": "Edit article happy path",
+      "status": "PASS",
+      "detail": "saved; slug \"qa-article-mwas9rbg\" → \"qa-article-mwas9rbg-edited\". Old link now → HTTP 404"
+    },
+    {
+      "id": "E2",
+      "name": "Editing a title silently breaks every shared link to the article",
+      "status": "ISSUE",
+      "detail": "old slug returns 404; no redirect from old URL"
+    },
+    {
+      "id": "E3",
+      "name": "Opening another user's edit URL: no message",
+      "status": "ISSUE",
+      "detail": "ended on /editor/qa-article-mwas9rbg-edited with 0 error message(s)"
+    },
+    {
+      "id": "E4",
+      "name": "API blocks editing another user's article",
+      "status": "PASS",
+      "detail": "PUT as user B → HTTP 404 (blocked)"
+    },
+    {
+      "id": "D1",
+      "name": "Failed delete gives no feedback and leaves button looking disabled",
+      "status": "ISSUE",
+      "detail": "DELETE forced to 500 → still on article, error shown: \"none\", button class \"btn btn-sm btn-outline-danger disabled\", real disabled attr: false"
+    },
+    {
+      "id": "D2",
+      "name": "Delete has no confirmation; double-click fires 2 DELETEs",
+      "status": "ISSUE",
+      "detail": "confirm dialogs: 0; DELETE requests sent: 2; article afterwards → HTTP 404"
+    },
+    {
+      "id": "N1",
+      "name": "Unknown URL shows an empty page (no 404 page)",
+      "status": "ISSUE",
+      "detail": "visible text is only header/footer: \"Home New Article Settings qa_a_mwas9rbg © 2026. An interactive learning project from RealWorld OSS Project. Code license…\""
+    },
+    {
+      "id": "N2",
+      "name": "Missing article shows a technical error string",
+      "status": "INFO",
+      "detail": "UI shows: \"(blank)\""
+    },
+    {
+      "id": "F1",
+      "name": "API outage: feed spins \"Loading articles…\" forever",
+      "status": "ISSUE",
+      "detail": "/articles and /tags return 503 → after 10 s page still says \"Loading articles...\" and \"Loading tags...\", no error, no retry"
+    },
+    {
+      "id": "P1",
+      "name": "Slow network (400 ms RTT, 400 kbit/s): time until first article",
+      "status": "INFO",
+      "detail": "6.6 s until the first article renders; ~197 KB transferred; only feedback is plain \"Loading articles...\" text"
+    },
+    {
+      "id": "P2",
+      "name": "API latency (5 × GET /articles?limit=10)",
+      "status": "INFO",
+      "detail": "215 / 163 / 161 / 162 / 162 ms; GET /tags 161 ms"
+    },
+    {
+      "id": "X1",
+      "name": "Frontend is missing standard security headers",
+      "status": "ISSUE",
+      "detail": "missing: content-security-policy, x-frame-options, strict-transport-security, x-content-type-options, referrer-policy"
+    },
+    {
+      "id": "X2",
+      "name": "API CORS policy",
+      "status": "INFO",
+      "detail": "preflight from https://evil.example → 200, allow-origin: https://evil.example"
+    },
+    {
+      "id": "X3",
+      "name": "Auth token stored in localStorage (readable by any script on the page)",
+      "status": "ISSUE",
+      "detail": "localStorage keys: jwtToken"
+    },
+    {
+      "id": "X4",
+      "name": "Email/password can be changed without the current password",
+      "status": "ISSUE",
+      "detail": "PUT /user {email} with only the JWT → HTTP 200"
+    },
+    {
+      "id": "AC-editor",
+      "name": "Accessibility – editor form",
+      "status": "ISSUE",
+      "detail": "4/4 fields have no <label>/aria-label (placeholder only); <html lang>=(none)"
+    },
+    {
+      "id": "AC-settings",
+      "name": "Accessibility – settings form",
+      "status": "ISSUE",
+      "detail": "5/5 fields have no <label>/aria-label (placeholder only); <html lang>=(none)"
+    },
+    {
+      "id": "AC-tags",
+      "name": "Tag \"remove\" control is a mouse-only <i> icon",
+      "status": "ISSUE",
+      "detail": "tabIndex -1, role null, aria-label null → cannot be reached by keyboard or screen reader"
+    },
+    {
+      "id": "O1",
+      "name": "Logout clears session in the browser",
+      "status": "PASS",
+      "detail": "token in storage after logout: no; header shows \"Sign in\": true"
+    },
+    {
+      "id": "O2",
+      "name": "Token still valid on the server after logout",
+      "status": "ISSUE",
+      "detail": "GET /user with the pre-logout token → HTTP 200; logout is client-side only (token is just deleted from localStorage; opaque token \"token_706e…\" is never revoked)"
+    },
+    {
+      "id": "O3",
+      "name": "Protected page after logout redirects to login",
+      "status": "PASS",
+      "detail": "/editor → /login"
+    },
+    {
+      "id": "AC-register",
+      "name": "Accessibility – sign-up form",
+      "status": "ISSUE",
+      "detail": "3/3 fields have no <label>/aria-label (placeholder only); <html lang>=(none)"
+    },
+    {
+      "id": "S4",
+      "name": "Sign-up with an existing email is accepted (sandbox-dependent)",
+      "status": "INFO",
+      "detail": "2nd sign-up with victim's email → accepted, no error. Attacker received the SAME token as the victim: false. Victim's own token now resolves to username \"qa_victim_mwas9rbg\". Attacker's password logs in with the victim's email → HTTP 200"
+    },
+    {
+      "id": "L3",
+      "name": "Repeated failed logins: never 429, then correct password also rejected",
+      "status": "INFO",
+      "detail": "12 wrong passwords in ~a few seconds → HTTP 401 (never 429, no CAPTCHA/delay); correct password right after → 401 – either a silent lockout (user is told \"credentials invalid\") or sandbox behaviour"
+    }
+  ]
+}

@@ -1,0 +1,16 @@
+{
+  "name": "task1-qa-tests",
+  "version": "1.0.0",
+  "description": "Automated QA checks for the RealWorld Conduit demo (Task 1)",
+  "scripts": {
+    "qa": "node qa.mjs",
+    "pdf": "node make-pdf.mjs"
+  },
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "playwright-core": "^1.56.1"
+  },
+  "private": true
+}

@@ -1,0 +1,574 @@
+{
+  "name": "Bonus – Conduit Uptime Monitor",
+  "nodes": [
+    {
+      "id": "6da2a9be-9854-4a63-ab4c-519971c7b84a",
+      "name": "Every 5 Minutes",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "minutes",
+              "minutesInterval": 5
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "340bd481-a0b2-4862-b315-d98871a63ba1",
+      "name": "GET /webhook/uptime-check",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        400
+      ],
+      "webhookId": "c2d9e1f0-6a7b-4c8d-9e0f-1a2b3c4d5e6f",
+      "parameters": {
+        "path": "uptime-check",
+        "httpMethod": "GET",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "f4e70c1a-5a40-4a2d-969b-bf3efb93bffd",
+      "name": "Targets",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// What to watch. Both halves of the Task 1 app: the frontend (must contain \"Conduit\" – catches\n// a 200 that serves the wrong page) and the API it depends on.\n// Manual/demo run: GET /webhook/uptime-check?probe=<url> adds one extra target, e.g. a URL that 404s.\nconst probe = $input.first().json.query?.probe;\nconst targets = [\n  { name: 'Conduit frontend', url: 'https://demo.realworld.show/', expect: 'Conduit' },\n  { name: 'Conduit API', url: 'https://api.realworld.show/api/tags', expect: '\"tags\"' },\n];\nif (probe) targets.push({ name: 'Test probe', url: probe, expect: '' });\nreturn targets.map(t => ({ json: t }));\n"
+      }
+    },
+    {
+      "id": "0dca9b3b-57ab-40c8-b840-fb7a112114aa",
+      "name": "Loop Targets",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        480,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1,
+        "options": {}
+      }
+    },
+    {
+      "id": "b37d8f98-2261-4520-adca-f3e9d60fe41e",
+      "name": "Start Timer",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// Stamp the start time right before this target's request (runs once per loop iteration).\nreturn [{ json: { ...$input.first().json, startedAt: Date.now() } }];\n"
+      }
+    },
+    {
+      "id": "7be6fba0-f289-4a28-be5d-139f4baa1918",
+      "name": "Ping",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        960,
+        400
+      ],
+      "parameters": {
+        "url": "={{ $json.url }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": true,
+              "responseFormat": "text"
+            }
+          }
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 5000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "53cd8f38-c2f6-4096-921f-e3772f518844",
+      "name": "Evaluate Check",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        400
+      ],
+      "parameters": {
+        "jsCode": "// Turn the raw HTTP result into a check result. The Ping node retries 3× (5 s apart) and then\n// continues on fail, so a dead target shows up here as { error } instead of stopping the run.\nconst SLOW_MS = 3000;\n// Runs once per item: .item follows the paired-item link back to *this* iteration's Start Timer.\nconst t = $('Start Timer').item.json;\nconst r = $input.item.json;\nconst ms = Date.now() - t.startedAt;            // includes retries = \"time until a usable answer\"\n\nlet status = r.statusCode ?? 0;\nlet error = null;\nif (r.error) {\n  const m = typeof r.error === 'string' ? r.error : (r.error.message || JSON.stringify(r.error));\n  error = String(m).slice(0, 300);\n  status = Number(r.error.httpCode || (String(m).match(/\\b([1-5]\\d\\d)\\b/) || [])[1] || 0); // 0 = timeout / DNS / TLS\n}\nconst raw = r.data ?? r.body ?? '';                // full-response mode puts the body in .data\nconst body = typeof raw === 'string' ? raw : JSON.stringify(raw);\nconst contentOk = !t.expect || body.includes(t.expect);\nconst up = status === 200 && contentOk;\n\nreturn { json: {\n  name: t.name, url: t.url, status, ms, up,\n  slow: up && ms > SLOW_MS,\n  contentOk,\n  error: error ?? (status === 200 && !contentOk ? `200 OK but body did not contain \"${t.expect}\"` : null),\n  checkedAt: new Date().toISOString(),\n} };\n",
+        "mode": "runOnceForEachItem"
+      }
+    },
+    {
+      "id": "19ea55c3-052d-4467-b8c6-2376588a8c5a",
+      "name": "Update History & Decide",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        720,
+        160
+      ],
+      "parameters": {
+        "jsCode": "// Keep 26 h of history + per-target state in workflow static data (persists between\n// production runs), and decide what is worth a notification:\n//   • DOWN (first failed check)        → alert immediately\n//   • still down                        → reminder every 30 min, not every 5 min (no alert spam)\n//   • back up                           → recovery message with downtime duration\n//   • up but slower than 3 s            → \"slow\" warning (max once per 30 min)\nconst REMIND_MS = 30 * 60 * 1000;\nconst results = $input.all().map(i => i.json);\nconst store = $getWorkflowStaticData('global');\nstore.history ??= [];\nstore.state ??= {};\nconst now = Date.now();\n\nfor (const r of results) store.history.push({ t: now, name: r.name, up: r.up, ms: r.ms, status: r.status });\nstore.history = store.history.filter(h => now - h.t < 26 * 3600e3);\n\nconst fmtDur = ms => ms < 3600e3 ? `${Math.round(ms / 60000)} min` : `${(ms / 3600e3).toFixed(1)} h`;\nconst lines = [];\nfor (const r of results) {\n  const s = store.state[r.name] ?? { up: true, since: now, lastAlert: 0, lastSlow: 0, incidents: 0 };\n  const what = r.status === 200 ? 'HTTP 200 but wrong content' : r.status ? `HTTP ${r.status} after 3 attempts` : 'no response after 3 attempts';\n  if (!r.up) {\n    if (s.up) {\n      s.since = now; s.lastAlert = now; s.incidents = (s.incidents || 0) + 1;\n      lines.push(`🔴 **${r.name} is DOWN** – ${what} (${r.ms} ms)\\n    ${r.url}${r.error ? `\\n    > ${r.error}` : ''}`);\n    } else if (now - s.lastAlert >= REMIND_MS) {\n      s.lastAlert = now;\n      lines.push(`🔴 **${r.name} still down** for ${fmtDur(now - s.since)} – ${what}`);\n    }\n    s.up = false;\n  } else {\n    if (!s.up) {\n      lines.push(`🟢 **${r.name} recovered** after ${fmtDur(now - s.since)} – HTTP 200 in ${r.ms} ms`);\n      s.since = now;\n    } else if (r.slow && now - (s.lastSlow || 0) >= REMIND_MS) {\n      s.lastSlow = now;\n      lines.push(`🟡 **${r.name} is slow** – ${r.ms} ms (threshold 3000 ms)`);\n    }\n    s.up = true;\n  }\n  store.state[r.name] = s;\n}\n\nconst summary = results.map(r => `${r.up ? '✅' : '❌'} ${r.name}: ${r.status || '—'} in ${r.ms} ms`).join(' · ');\nreturn [{ json: {\n  alertCount: lines.length,\n  content: lines.length ? [...lines, '', `-# Uptime monitor · ${new Date().toUTCString()}`].join('\\n').slice(0, 1990) : '',\n  summary,\n  results,\n} }];\n"
+      }
+    },
+    {
+      "id": "9f8cd753-0fb7-460c-bccf-b6a024c45f6e",
+      "name": "Anything to report?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        960,
+        160
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "e2cf2b22-7c78-4a02-a424-b1051910bdd0",
+              "leftValue": "={{ $json.alertCount }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "cbc859e0-81bd-4e59-9064-e5136fb1c68f",
+      "name": "Post Uptime Alert",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        1200,
+        60
+      ],
+      "parameters": {
+        "authentication": "webhook",
+        "operation": "sendLegacy",
+        "content": "={{ $json.content }}",
+        "options": {
+          "username": "Uptime Monitor",
+          "wait": true
+        }
+      },
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "discordTeamHook1",
+          "name": "Discord – team channel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "b2d86c68-8332-4f5f-822f-788489940927",
+      "name": "Delivered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1440,
+        60
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "9bbf0a85-53b0-498d-8ab2-c425e34d0e7d",
+              "leftValue": "={{ !$json.error && !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "cb7b20f8-32f5-4519-913e-f9e53ee9b354",
+      "name": "All Healthy",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1200,
+        240
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "d2579dae-d862-4914-aa86-0881377db285",
+      "name": "Log Delivery Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1680,
+        140
+      ],
+      "parameters": {
+        "jsCode": "const e = $input.first().json.error ?? $input.first().json;\nconsole.error('[uptime] Discord delivery failed:', String(e.message || JSON.stringify(e)).slice(0, 300));\nreturn [{ json: { reason: String(e.message || 'unknown').slice(0, 300) } }];\n"
+      }
+    },
+    {
+      "id": "11a96708-a58c-4e12-b908-c5a48f0fe4fd",
+      "name": "Fail Execution",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        1920,
+        140
+      ],
+      "parameters": {
+        "errorMessage": "=Uptime alert could not be delivered to Discord: {{ $json.reason }}"
+      }
+    },
+    {
+      "id": "cfbac72b-4ae4-4649-bbf9-61930fb51560",
+      "name": "Daily 09:00",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        640
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "days",
+              "daysInterval": 1,
+              "triggerAtHour": 9,
+              "triggerAtMinute": 0
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "3b73e3fc-fc39-4754-9a07-24ec562342ac",
+      "name": "GET /webhook/uptime-summary",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        820
+      ],
+      "webhookId": "d3e0f2a1-7b8c-4d9e-8f10-2b3c4d5e6f70",
+      "parameters": {
+        "path": "uptime-summary",
+        "httpMethod": "GET",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "dbe7d54e-411e-4db9-9313-d36dce0831f9",
+      "name": "Build Daily Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        640
+      ],
+      "parameters": {
+        "jsCode": "// Daily 09:00 summary from the stored history (last 24 h).\nconst store = $getWorkflowStaticData('global');\nconst now = Date.now();\nconst hist = (store.history ?? []).filter(h => now - h.t < 24 * 3600e3);\nif (!hist.length) {\n  return [{ json: { content: '📊 **Daily uptime summary** – no checks recorded in the last 24 h. Is the monitor workflow active?' } }];\n}\nconst names = [...new Set(hist.map(h => h.name))].filter(n => n !== 'Test probe');\nconst pct = (a, b) => (b ? (100 * a / b).toFixed(2) : '0.00');\nconst lines = names.map(n => {\n  const h = hist.filter(x => x.name === n);\n  const up = h.filter(x => x.up);\n  const times = up.map(x => x.ms).sort((a, b) => a - b);\n  const avg = times.length ? Math.round(times.reduce((a, b) => a + b, 0) / times.length) : 0;\n  const p95 = times.length ? times[Math.min(times.length - 1, Math.floor(times.length * 0.95))] : 0;\n  const downChecks = h.length - up.length;\n  return `${downChecks ? '⚠️' : '✅'} **${n}** – uptime **${pct(up.length, h.length)}%** (${h.length} checks, ${downChecks} failed)\\n    avg ${avg} ms · p95 ${p95} ms · max ${times.at(-1) ?? 0} ms · incidents so far: ${store.state?.[n]?.incidents ?? 0}`;\n});\nreturn [{ json: { content: ['📊 **Daily uptime summary** (last 24 h)', '', ...lines].join('\\n') } }];\n"
+      }
+    },
+    {
+      "id": "4d949731-59fe-4e96-b7d1-f4936a85518f",
+      "name": "Post Daily Summary",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        480,
+        640
+      ],
+      "parameters": {
+        "authentication": "webhook",
+        "operation": "sendLegacy",
+        "content": "={{ $json.content }}",
+        "options": {
+          "username": "Uptime Monitor",
+          "wait": true
+        }
+      },
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "discordTeamHook1",
+          "name": "Discord – team channel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "20b76d90-1b2b-44ba-b895-9ef0055ceb16",
+      "name": "Note oifu0",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -40
+      ],
+      "parameters": {
+        "content": "## Uptime monitor (Task 1 app)\nEvery 5 min: frontend + API, one at a time.\n• 3 tries, 5 s apart, 10 s timeout\n• status must be 200 **and** body must look right\n• response time per check\n• alert on DOWN / reminder every 30 min / RECOVERED / SLOW > 3 s",
+        "width": 440,
+        "height": 210,
+        "color": 4
+      }
+    },
+    {
+      "id": "8743a060-7f6b-478a-ba25-1e5bd4a461af",
+      "name": "Note n7t0u",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        540
+      ],
+      "parameters": {
+        "content": "### Daily 09:00 summary\nuptime %, avg / p95 / max response time, failed checks, incidents – from 24 h of stored history",
+        "width": 440,
+        "height": 90,
+        "color": 5
+      }
+    }
+  ],
+  "connections": {
+    "Every 5 Minutes": {
+      "main": [
+        [
+          {
+            "node": "Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET /webhook/uptime-check": {
+      "main": [
+        [
+          {
+            "node": "Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Targets": {
+      "main": [
+        [
+          {
+            "node": "Loop Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Targets": {
+      "main": [
+        [
+          {
+            "node": "Update History & Decide",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Start Timer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Start Timer": {
+      "main": [
+        [
+          {
+            "node": "Ping",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ping": {
+      "main": [
+        [
+          {
+            "node": "Evaluate Check",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Evaluate Check": {
+      "main": [
+        [
+          {
+            "node": "Loop Targets",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Update History & Decide": {
+      "main": [
+        [
+          {
+            "node": "Anything to report?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Anything to report?": {
+      "main": [
+        [
+          {
+            "node": "Post Uptime Alert",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "All Healthy",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Uptime Alert": {
+      "main": [
+        [
+          {
+            "node": "Delivered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivered?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Delivery Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Delivery Failure": {
+      "main": [
+        [
+          {
+            "node": "Fail Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Daily 09:00": {
+      "main": [
+        [
+          {
+            "node": "Build Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET /webhook/uptime-summary": {
+      "main": [
+        [
+          {
+            "node": "Build Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Daily Summary": {
+      "main": [
+        [
+          {
+            "node": "Post Daily Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "Asia/Kolkata"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

@@ -1,0 +1,13 @@
+# secrets / local config
+.env
+*.local.json
+
+# dependencies & tooling
+node_modules/
+task1/app/
+
+# local logs
+task1/qa-tests/run.log
+mock-discord.log
+LOOM_TALKING_POINTS.md
+.vscode/

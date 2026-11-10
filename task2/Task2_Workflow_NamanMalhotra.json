@@ -1,0 +1,666 @@
+{
+  "name": "Task 2 – HN Morning Brief",
+  "nodes": [
+    {
+      "id": "3e37fea8-741c-4fb6-93dd-0ff1f78e7fad",
+      "name": "Every Hour",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        200
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 1
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "0293f1bc-2ee4-4b38-b7e1-1eda5c2ac077",
+      "name": "GET /webhook/hn-brief",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        400
+      ],
+      "webhookId": "b7c4a6f2-5d0e-4b8a-9c3e-7a1e2b3c4d5f",
+      "parameters": {
+        "path": "hn-brief",
+        "httpMethod": "GET",
+        "responseMode": "onReceived",
+        "options": {}
+      }
+    },
+    {
+      "id": "518b8acc-7928-43aa-b398-088ccc72629c",
+      "name": "HN Front Page",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        240,
+        300
+      ],
+      "parameters": {
+        "url": "=https://hn.algolia.com/api/v1/{{ $json.query?.simulate === 'fetch_fail' ? 'does-not-exist' : 'search' }}?tags=front_page&hitsPerPage=30",
+        "options": {
+          "timeout": 10000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 2000,
+      "onError": "continueErrorOutput"
+    },
+    {
+      "id": "879e126b-913a-45e8-bacf-f595f279abbf",
+      "name": "Top 5 by Points",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Algolia returns ~30 front-page stories. Keep real stories, rank by points, keep the top 5\n// and reshape each one to only what the digest needs.\nconst hits = $input.first().json.hits ?? [];\nif (!hits.length) {\n  // An empty front page means the upstream API changed or broke – fail loudly (→ Error Trigger).\n  throw new Error('HN front page returned 0 stories');\n}\nconst now = Date.now();\nreturn hits\n  .filter(h => h.title && typeof h.points === 'number')\n  .sort((a, b) => b.points - a.points)\n  .slice(0, 5)\n  .map((h, i) => {\n    const ageHours = Math.max((now - h.created_at_i * 1000) / 3.6e6, 0.1);\n    const hnLink = `https://news.ycombinator.com/item?id=${h.objectID}`;\n    return {\n      json: {\n        rank: i + 1,\n        id: Number(h.objectID),\n        title: h.title.trim(),\n        url: h.url || hnLink,\n        hnLink,\n        // (the Code-node sandbox has no URL global, so parse the host with a regex)\n        domain: h.url ? ((h.url.match(/^https?:\\/\\/(?:www\\.)?([^/:?#]+)/i) || [])[1] || 'link') : 'news.ycombinator.com',\n        author: h.author,\n        points: h.points,\n        comments: h.num_comments ?? 0,\n        ageHours: Math.round(ageHours * 10) / 10,\n      },\n    };\n  });\n"
+      }
+    },
+    {
+      "id": "edf77f90-42c4-40f7-88e2-e581221b0731",
+      "name": "Live Stats (HN API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        720,
+        200
+      ],
+      "parameters": {
+        "url": "=https://hacker-news.firebaseio.com/v0/{{ $('GET /webhook/hn-brief').isExecuted && $('GET /webhook/hn-brief').first().json.query?.simulate === 'enrich_fail' ? 'no-such-path' : 'item' }}/{{ $json.id }}.json",
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "c9bd4f36-196e-4afa-b88b-86b1f7e0c0b6",
+      "name": "Merge Live Stats",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        960,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Combine each Algolia story with its live record from the official HN API.\n// The enrichment node runs with \"On Error: Continue\", so a failed lookup arrives here as\n// { error } – we then keep the Algolia values and count the failure instead of crashing.\nconst base = $('Top 5 by Points').all();\nconst live = $input.all();\nlet enrichFailures = 0;\n\nconst stories = base.map((b, i) => {\n  const s = { ...b.json };\n  const l = live[i]?.json ?? {};\n  if (l.error || typeof l.score !== 'number') {\n    enrichFailures++;\n    s.live = false;\n    s.topCommentId = 0;\n  } else {\n    s.live = true;\n    s.points = l.score;                         // live score (Algolia index can lag minutes)\n    s.comments = l.descendants ?? s.comments;   // live comment count\n    s.topCommentId = Array.isArray(l.kids) && l.kids.length ? l.kids[0] : 0; // kids[] is in rank order\n  }\n  s.pointsPerHour = Math.round(s.points / Math.max(s.ageHours, 0.1));\n  return s;\n});\n\nstories.sort((a, b) => b.points - a.points).forEach((s, i) => (s.rank = i + 1));\nif (enrichFailures) console.warn(`[HN brief] live stats failed for ${enrichFailures}/${stories.length} stories – using cached values`);\n\nreturn [{ json: { stories, top: stories[0], enrichFailures, generatedAt: new Date().toISOString() } }];\n"
+      }
+    },
+    {
+      "id": "4f6f1cbd-146d-4b4f-8201-f3bbc7285a12",
+      "name": "#1 has ≥ 500 points?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1200,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "23a2ecbb-478f-42e3-8126-00b02a9eca5b",
+              "leftValue": "={{ $json.top.points }}",
+              "rightValue": 500,
+              "operator": {
+                "type": "number",
+                "operation": "gte"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "2c557d2a-820e-4fe8-8cd2-5793640e8128",
+      "name": "Breakout Header",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1440,
+        100
+      ],
+      "parameters": {
+        "includeOtherFields": true,
+        "options": {},
+        "assignments": {
+          "assignments": [
+            {
+              "id": "97dd3a42-fcc4-4b0d-b9e2-77d3fc571b92",
+              "name": "mode",
+              "type": "string",
+              "value": "breakout"
+            },
+            {
+              "id": "26576b31-9d17-4bc2-8a8f-c8d201c75ba6",
+              "name": "headline",
+              "type": "string",
+              "value": "=🚨 **Big story on Hacker News** – #1 is at {{ $json.top.points }} points\n☕ HN Morning Brief · top 5 right now"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "c8592688-a1d0-4837-a146-4a8d5dc40ff7",
+      "name": "Regular Header",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1440,
+        300
+      ],
+      "parameters": {
+        "includeOtherFields": true,
+        "options": {},
+        "assignments": {
+          "assignments": [
+            {
+              "id": "f90e9a7f-d96b-4a88-b6a6-9b05d771d1a4",
+              "name": "mode",
+              "type": "string",
+              "value": "regular"
+            },
+            {
+              "id": "6d5a61ad-3005-430d-9a09-540f08714b95",
+              "name": "headline",
+              "type": "string",
+              "value": "☕ **HN Morning Brief** · top 5 right now"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "e7e0e085-ad57-48ca-ab4f-a22398df06d1",
+      "name": "Top Comment (HN API)",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1680,
+        200
+      ],
+      "parameters": {
+        "url": "=https://hacker-news.firebaseio.com/v0/item/{{ $json.top.topCommentId }}.json",
+        "options": {
+          "timeout": 8000
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 2,
+      "waitBetweenTries": 1000,
+      "onError": "continueRegularOutput",
+      "alwaysOutputData": true
+    },
+    {
+      "id": "bd452bb1-d33a-4562-b567-74902efd94af",
+      "name": "Compose Digest",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1920,
+        200
+      ],
+      "parameters": {
+        "jsCode": "// Build the Discord message (Discord hard limit: 2,000 characters).\nconst digest = $('Breakout Header').isExecuted ? $('Breakout Header').first().json : $('Regular Header').first().json;\nconst comment = $input.first().json;\n\nconst decode = (html = '') => html\n  .replace(/<p>/g, ' ').replace(/<[^>]+>/g, '')\n  .replace(/&#x27;/g, \"'\").replace(/&quot;/g, '\"').replace(/&#x2F;/g, '/')\n  .replace(/&gt;/g, '>').replace(/&lt;/g, '<').replace(/&amp;/g, '&')\n  .replace(/\\s+/g, ' ').trim();\n\nconst HOT = 300; // per-story marker, see README\nconst lines = digest.stories.map(s =>\n  `${s.points >= HOT ? '🔥' : '▫️'} **${s.rank}. [${s.title}](<${s.url}>)**\\n` +\n  `    ${s.points} pts · ${s.comments} comments · ${s.pointsPerHour} pts/h · ${s.domain} · [discuss](<${s.hnLink}>)`);\n\nlet commentLine;\nif (comment.error || !comment.text) {\n  commentLine = '💬 _Top comment unavailable – enrichment skipped_';\n} else {\n  const t = decode(comment.text);\n  commentLine = `💬 **Top comment on #1** (${comment.by}): “${t.length > 280 ? t.slice(0, 277) + '…' : t}”`;\n}\n\nconst footer = [];\nif (digest.enrichFailures) footer.push(`⚠️ Live stats unavailable for ${digest.enrichFailures}/5 stories – showing cached values.`);\nfooter.push(`-# HN Algolia + official HN API · ${new Date(digest.generatedAt).toUTCString()}`);\n\nlet content = [digest.headline, '', ...lines, '', commentLine, '', ...footer].join('\\n');\nif (content.length > 1990) content = content.slice(0, 1989) + '…';\n\nreturn [{ json: {\n  content,\n  mode: digest.mode,\n  topPoints: digest.top.points,\n  enrichFailures: digest.enrichFailures,\n  topCommentOk: !comment.error && !!comment.text,\n} }];\n"
+      }
+    },
+    {
+      "id": "c6b1192b-868e-49d8-8198-9f3479b89098",
+      "name": "Post Digest",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        2160,
+        200
+      ],
+      "parameters": {
+        "authentication": "webhook",
+        "operation": "sendLegacy",
+        "content": "={{ $json.content }}",
+        "options": {
+          "username": "HN Morning Brief",
+          "wait": true
+        }
+      },
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "discordTeamHook1",
+          "name": "Discord – team channel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "346ff03d-da40-484f-8849-c74779834647",
+      "name": "Delivered?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        2400,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "loose",
+            "version": 2
+          },
+          "conditions": [
+            {
+              "id": "0442f07e-88e5-46b3-a293-d28bfa4d83f2",
+              "leftValue": "={{ !$json.error && !!$json.id }}",
+              "rightValue": "",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "42831180-fef1-4254-a86c-1b9f2b81ff12",
+      "name": "Log Delivery Failure",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2640,
+        300
+      ],
+      "parameters": {
+        "jsCode": "// Error output of \"Post Digest\": Discord refused / was unreachable 3 times in a row.\n// We can't alert on the channel that is down, so: log it, then fail the execution on purpose\n// (red in the Executions list + Error Workflow fires) instead of finishing \"green\".\nconst e = $input.first().json.error ?? $input.first().json;\nconst msg = String(e.message || JSON.stringify(e)).slice(0, 400);\nconsole.error('[HN brief] Discord delivery failed:', msg);\nreturn [{ json: { reason: msg } }];\n"
+      }
+    },
+    {
+      "id": "673ead73-fe39-4b59-9f37-6dc0ebc76c4a",
+      "name": "Fail Execution",
+      "type": "n8n-nodes-base.stopAndError",
+      "typeVersion": 1,
+      "position": [
+        2880,
+        300
+      ],
+      "parameters": {
+        "errorMessage": "=Digest could not be delivered to Discord after 3 attempts: {{ $json.reason }}"
+      }
+    },
+    {
+      "id": "ea4ec7a9-1411-40c9-8b00-08828923303c",
+      "name": "Format Fetch Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        480,
+        460
+      ],
+      "parameters": {
+        "jsCode": "// Error output of \"HN Front Page\": the call failed after 3 attempts.\nconst e = $input.first().json.error ?? $input.first().json;\nconst msg = String(typeof e === 'string' ? e : (e.message || JSON.stringify(e)))\n  .replace(/\\\\n/g, ' ').replace(/<[^>]+>/g, ' ').replace(/\\s+/g, ' ').trim().slice(0, 300); // HTML error pages → one line\nconsole.error('[HN brief] front-page fetch failed:', msg);\nreturn [{ json: {\n  content: [\n    '⚠️ **HN Morning Brief – no digest this run**',\n    'Could not fetch the Hacker News front page after 3 attempts.',\n    `> ${msg}`,\n    `Execution #${$execution.id} · next attempt at the next scheduled run.`,\n  ].join('\\n'),\n} }];\n"
+      }
+    },
+    {
+      "id": "6536120a-91d7-4451-8326-6e827c7802e8",
+      "name": "Post Fetch Alert",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        720,
+        460
+      ],
+      "parameters": {
+        "authentication": "webhook",
+        "operation": "sendLegacy",
+        "content": "={{ $json.content }}",
+        "options": {
+          "username": "HN Brief – alerts",
+          "wait": true
+        }
+      },
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "discordTeamHook1",
+          "name": "Discord – team channel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000
+    },
+    {
+      "id": "4e67ff34-4c57-4088-8524-b7df267a56d9",
+      "name": "On Workflow Error",
+      "type": "n8n-nodes-base.errorTrigger",
+      "typeVersion": 1,
+      "position": [
+        0,
+        680
+      ],
+      "parameters": {}
+    },
+    {
+      "id": "aed19b97-46d2-4c69-af15-7bf9775ec525",
+      "name": "Format Crash Alert",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        240,
+        680
+      ],
+      "parameters": {
+        "jsCode": "// Error Trigger: anything that was not handled above (e.g. a Code node threw).\nconst x = $input.first().json;\nconst node = x.execution?.lastNodeExecuted ?? 'unknown node';\nconst msg = x.execution?.error?.message ?? 'unknown error';\nconsole.error('[HN brief] workflow crashed in', node, '-', msg);\nreturn [{ json: { content: [\n  `🛑 **Workflow crashed: ${x.workflow?.name ?? 'HN Morning Brief'}**`,\n  `Node: \\`${node}\\``,\n  `Error: ${msg}`,\n  x.execution?.url ? `Execution: ${x.execution.url}` : '',\n].filter(Boolean).join('\\n') } }];\n"
+      }
+    },
+    {
+      "id": "595ad95c-5b95-4a26-b70e-cbdba2dfcdce",
+      "name": "Post Crash Alert",
+      "type": "n8n-nodes-base.discord",
+      "typeVersion": 2,
+      "position": [
+        480,
+        680
+      ],
+      "parameters": {
+        "authentication": "webhook",
+        "operation": "sendLegacy",
+        "content": "={{ $json.content }}",
+        "options": {
+          "username": "HN Brief – alerts",
+          "wait": true
+        }
+      },
+      "credentials": {
+        "discordWebhookApi": {
+          "id": "discordTeamHook1",
+          "name": "Discord – team channel"
+        }
+      },
+      "retryOnFail": true,
+      "maxTries": 3,
+      "waitBetweenTries": 3000,
+      "onError": "continueRegularOutput"
+    },
+    {
+      "id": "f9dfaec3-7086-4aa1-b614-81e61dae872a",
+      "name": "Note nfc0i",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        -40,
+        -40
+      ],
+      "parameters": {
+        "content": "## HN Morning Brief\nHourly (or `curl localhost:5678/webhook/hn-brief`).\n1. Algolia: front page → **top 5 by points**\n2. Official HN API: **live score + top comment**\n3. IF #1 ≥ 500 pts → \"big story\" header\n4. Post to Discord (credential, no secrets in nodes)",
+        "width": 420,
+        "height": 200,
+        "color": 4
+      }
+    },
+    {
+      "id": "391c8dc2-7703-405d-8b7e-11160b78acf0",
+      "name": "Note n2spv",
+      "type": "n8n-nodes-base.stickyNote",
+      "typeVersion": 1,
+      "position": [
+        940,
+        420
+      ],
+      "parameters": {
+        "content": "### Error paths\n• Front-page fetch: 3 tries → error output → Discord alert\n• Enrichment: continue on fail → digest still sent, marked ⚠️\n• Discord: 3 tries → \"Delivered?\" check → log → Stop and Error (execution fails visibly → crash alert)\n• Anything else → Error Trigger → crash alert",
+        "width": 460,
+        "height": 170,
+        "color": 3
+      }
+    }
+  ],
+  "connections": {
+    "Every Hour": {
+      "main": [
+        [
+          {
+            "node": "HN Front Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "GET /webhook/hn-brief": {
+      "main": [
+        [
+          {
+            "node": "HN Front Page",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HN Front Page": {
+      "main": [
+        [
+          {
+            "node": "Top 5 by Points",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Format Fetch Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Top 5 by Points": {
+      "main": [
+        [
+          {
+            "node": "Live Stats (HN API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Live Stats (HN API)": {
+      "main": [
+        [
+          {
+            "node": "Merge Live Stats",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge Live Stats": {
+      "main": [
+        [
+          {
+            "node": "#1 has ≥ 500 points?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "#1 has ≥ 500 points?": {
+      "main": [
+        [
+          {
+            "node": "Breakout Header",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Regular Header",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Breakout Header": {
+      "main": [
+        [
+          {
+            "node": "Top Comment (HN API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Regular Header": {
+      "main": [
+        [
+          {
+            "node": "Top Comment (HN API)",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Top Comment (HN API)": {
+      "main": [
+        [
+          {
+            "node": "Compose Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Compose Digest": {
+      "main": [
+        [
+          {
+            "node": "Post Digest",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Post Digest": {
+      "main": [
+        [
+          {
+            "node": "Delivered?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delivered?": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Log Delivery Failure",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Delivery Failure": {
+      "main": [
+        [
+          {
+            "node": "Fail Execution",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Fetch Alert": {
+      "main": [
+        [
+          {
+            "node": "Post Fetch Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "On Workflow Error": {
+      "main": [
+        [
+          {
+            "node": "Format Crash Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Format Crash Alert": {
+      "main": [
+        [
+          {
+            "node": "Post Crash Alert",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "Asia/Kolkata"
+  },
+  "pinData": {},
+  "meta": {
+    "templateCredsSetupCompleted": false
+  },
+  "tags": []
+}

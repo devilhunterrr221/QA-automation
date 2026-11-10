@@ -1,0 +1,201 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Task 1 QA Report – Naman Malhotra</title>
+<style>
+  @page { size: A4; margin: 14mm 12mm; }
+  :root { --ink:#1d2433; --muted:#5b6475; --line:#d5dae3; --accent:#2f6fde; --crit:#9b1c1c; --high:#d9480f; --med:#b7791f; --low:#2f855a; }
+  * { box-sizing: border-box; }
+  body { font-family: "Segoe UI", Arial, sans-serif; color: var(--ink); font-size: 9.6pt; line-height: 1.42; margin: 0; }
+  h1 { font-size: 19pt; margin: 0 0 2px; letter-spacing: -.2px; }
+  h2 { font-size: 12.5pt; margin: 18px 0 6px; padding-bottom: 3px; border-bottom: 2px solid var(--accent); }
+  h3 { font-size: 10.5pt; margin: 12px 0 4px; }
+  p { margin: 4px 0 6px; }
+  .meta { color: var(--muted); font-size: 9pt; }
+  .meta b { color: var(--ink); }
+  .box { border: 1px solid var(--line); border-left: 4px solid var(--accent); padding: 8px 12px; margin: 8px 0; background: #f7f9fc; }
+  .grid3 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 8px 0; }
+  .stat { border: 1px solid var(--line); padding: 6px 8px; border-radius: 4px; }
+  .stat .n { font-size: 15pt; font-weight: 700; } .stat .l { color: var(--muted); font-size: 8.4pt; }
+  table { border-collapse: collapse; width: 100%; font-size: 8.1pt; }
+  th, td { border: 1px solid var(--line); padding: 4px 5px; vertical-align: top; text-align: left; }
+  th { background: #eef2f8; font-size: 8.3pt; }
+  tr { page-break-inside: avoid; }
+  td.n { text-align: center; font-weight: 700; width: 18px; }
+  .sev { display: inline-block; padding: 1px 6px; border-radius: 3px; color: #fff; font-weight: 600; font-size: 7.8pt; }
+  .Critical { background: var(--crit); } .High { background: var(--high); } .Medium { background: var(--med); } .Low { background: var(--low); }
+  code { font-family: Consolas, monospace; font-size: 7.9pt; background: #f1f3f7; padding: 0 2px; border-radius: 2px; word-break: break-word; }
+  .ev { color: var(--muted); font-size: 7.6pt; display: block; margin-top: 2px; }
+  ul.tight { margin: 4px 0 6px 18px; padding: 0; } ul.tight li { margin: 1px 0; }
+  .shots { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+  figure { margin: 0; page-break-inside: avoid; }
+  figure img { width: 100%; border: 1px solid var(--line); }
+  figcaption { font-size: 8pt; color: var(--muted); margin-top: 2px; }
+  .pb { page-break-before: always; }
+  pre { font-family: Consolas, monospace; font-size: 7.8pt; background: #f1f3f7; padding: 6px 8px; border-radius: 3px; white-space: pre-wrap; margin: 6px 0; }
+</style>
+</head>
+<body>
+
+<h1>Task 1 — Web App QA &amp; Debug Report</h1>
+<p class="meta"><b>App under test:</b> RealWorld “Conduit”, the public live demo at <code>https://demo.realworld.show</code> (Angular frontend, source: <code>realworld-apps/angular-realworld-example-app</code>) backed by the public API <code>https://api.realworld.show/api</code>.<br>
+<b>Tester:</b> Naman Malhotra &nbsp;·&nbsp; <b>Date:</b> 10 Nov 2026 &nbsp;·&nbsp; <b>Browser:</b> Chrome 156 (desktop 1280×800, phone 375×740)<br>
+<b>Method:</b> manual walkthrough of every core flow → automated Playwright run of 38 checks (<code>task1/qa-tests/qa.mjs</code>, evidence in <code>results.json</code> + <code>screenshots/</code>) → each frontend finding confirmed by reading the Angular source.</p>
+
+<div class="box">
+<b>Summary for stakeholders.</b> The happy paths work: you can sign up, log in, write, edit and delete an article and log out.
+The app “feels broken” because almost nothing has been built for when things go wrong:
+<ul class="tight">
+  <li><b>When the server is slow or has a hiccup, the app just hangs.</b> The home page says “Loading articles…” forever. Deleting can fail silently, and a broken link shows a blank white page. Users get no explanation and no retry button.</li>
+  <li><b>Forms accept bad input and then show confusing messages.</b> They take a 1-character password and a username made of spaces. A too-long title gives “body title is a string of less than 100 chars”. A large post says “check your internet connection” when the internet is fine.</li>
+  <li><b>Destructive actions aren't protected.</b> One click deletes an article with no “are you sure?”. A double-click sends the request twice.</li>
+  <li><b>Account security and accessibility need work before production.</b> The session token is never revoked on logout. Email and password can be changed without the current password. Form fields have no labels for screen readers.</li>
+</ul>
+None of these are hard to fix. Most come from one pattern, data requests with no error handling, so a single shared fix addresses several rows at once (see the root-cause analysis).
+</div>
+
+<div class="grid3">
+  <div class="stat"><div class="n">38</div><div class="l">automated checks run</div></div>
+  <div class="stat"><div class="n">15</div><div class="l">issues reported below</div></div>
+  <div class="stat"><div class="n">5 / 7 / 3</div><div class="l">High / Medium / Low</div></div>
+  <div class="stat"><div class="n">9</div><div class="l">checks passed (incl. XSS, auth guard)</div></div>
+</div>
+
+<h2>Bug table</h2>
+<table>
+<thead><tr><th>#</th><th style="width:17%">Title / Summary</th><th style="width:21%">Steps to Reproduce</th><th style="width:27%">Expected vs Actual</th><th style="width:7%">Severity</th><th>Suspected Cause</th></tr></thead>
+<tbody>
+
+<tr><td class="n">1</td><td><b>Home feed and tag list hang on “Loading…” forever when the API fails or is slow</b></td>
+<td>1. Open <code>/</code> while the API is down or slow (simulated: <code>/api/articles</code> and <code>/api/tags</code> return 503).<br>2. Wait.</td>
+<td><b>Expected:</b> after a few seconds, a message such as “Couldn't load articles. Retry”.<br><b>Actual:</b> “Loading articles…” and “Loading tags…” stay on screen indefinitely, with no error, no retry and no timeout. <span class="ev">Evidence: F1, screenshot F1_feed_stuck_loading.png</span></td>
+<td><span class="sev High">High</span></td>
+<td><code>article-list.component.ts › runQuery()</code> subscribes with only a <code>next</code> handler, and there is no error state in <code>LoadingState</code>. <code>home.component.ts › tags$</code> has the same gap. See the root-cause analysis.</td></tr>
+
+<tr><td class="n">2</td><td><b>Delete article: no confirmation, double-click sends 2 requests, failures are silent</b></td>
+<td>1. Open one of your articles → click <i>Delete Article</i> (or double-click it).<br>2. Repeat with the DELETE call failing (forced 500).</td>
+<td><b>Expected:</b> a confirmation step, a single request, and an error message plus a usable button if it fails.<br><b>Actual:</b> it deletes immediately with no confirmation and no undo. A double-click fired <b>2 DELETE</b> requests. On failure, nothing is shown and the button stays greyed out (“disabled” class) but is still clickable. <span class="ev">Evidence: D1, D2, D1_delete_failure_silent.png</span></td>
+<td><span class="sev High">High</span></td>
+<td><code>article.component.ts › deleteArticle()</code> has no <code>error</code> callback and never resets <code>isDeleting</code>. The button is “disabled” only through <code>[ngClass]</code>, not the <code>disabled</code> attribute, and there is no <code>confirm()</code>/modal.</td></tr>
+
+<tr><td class="n">3</td><td><b>Weak sign-up validation: 1-character passwords and blank or HTML usernames accepted</b></td>
+<td>Sign up with password <code>1</code>; or username <code>"   "</code> (spaces only); or <code>&lt;b&gt;qa&lt;/b&gt;</code>.</td>
+<td><b>Expected:</b> a minimum password length (for example 8 or more) and a trimmed, safe username.<br><b>Actual:</b> all three are accepted (HTTP 201). Only a 300-character username was rejected (422). The form gives no hint about the rules. <span class="ev">Evidence: S2, S3</span></td>
+<td><span class="sev High">High</span></td>
+<td>API validation only checks “not empty” and length. The frontend has <code>Validators.required</code> only, with no <code>minLength</code>/<code>pattern</code> and no trimming.</td></tr>
+
+<tr><td class="n">4</td><td><b>Email and password can be changed without re-entering the current password</b></td>
+<td>Logged in → <i>Settings</i> → change the email (or password) → <i>Update Settings</i>.</td>
+<td><b>Expected:</b> sensitive changes ask for the current password.<br><b>Actual:</b> <code>PUT /user</code> with only the session token returns 200. Anyone with a few seconds at an unlocked laptop, or a stolen token, can take over the account permanently. <span class="ev">Evidence: X4</span></td>
+<td><span class="sev High">High</span></td>
+<td>The settings form has no “current password” field, and the API's update endpoint doesn't require one. The login token alone authorises everything.</td></tr>
+
+<tr><td class="n">5</td><td><b>Session token survives logout and is readable by any script</b></td>
+<td>1. Log in, copy <code>localStorage.jwtToken</code>.<br>2. Click <i>logout</i>.<br>3. Call <code>GET /api/user</code> with the copied token.</td>
+<td><b>Expected:</b> logout invalidates the session on the server.<br><b>Actual:</b> the UI looks logged out, but the old token still returns 200. The token lives in <code>localStorage</code>, so any injected script (XSS, or a compromised third-party script) can steal it. <span class="ev">Evidence: O1, O2, X3</span></td>
+<td><span class="sev High">High</span></td>
+<td><code>user.service.ts › purgeAuth()</code> only deletes the token locally. There is no logout/revoke endpoint, and <code>jwt.service.ts</code> uses <code>localStorage</code> instead of an httpOnly cookie.</td></tr>
+
+<tr><td class="n">6</td><td><b>A missing or deleted article shows a blank white page</b></td>
+<td>Open <code>/article/does-not-exist</code>, or an old link to an article whose title was edited (see #7).</td>
+<td><b>Expected:</b> “Article not found” with a link home.<br><b>Actual:</b> only the header and footer render, with no message at all. <span class="ev">Evidence: N2, N2_missing_article.png</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td>A data-shape bug: <code>article.component.ts</code> does <code>errors.set(err.errors)</code> (the inner object), but <code>ListErrorsComponent</code> reads <code>errors.errors</code>, so the list is always empty.</td></tr>
+
+<tr><td class="n">7</td><td><b>Editing an article's title breaks every link shared to it</b></td>
+<td>1. Publish an article and copy its URL.<br>2. Edit the title → publish.<br>3. Open the old URL.</td>
+<td><b>Expected:</b> old links keep working or redirect.<br><b>Actual:</b> the slug changes (<code>qa-article-…</code> → <code>qa-article-…-edited</code>), and the old URL returns 404, then the blank page from #6. <span class="ev">Evidence: E1, E2</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td>The slug is regenerated from the title on every update, and there is no slug history or redirect. Keep the slug stable, or store old slugs and return 301.</td></tr>
+
+<tr><td class="n">8</td><td><b>Misleading “Unable to connect. Please check your internet connection.” for server errors</b></td>
+<td>Publish an article with a very large body (about 2.4 MB), or hit any API error whose body isn't the expected JSON.</td>
+<td><b>Expected:</b> “Your article is too large (max X MB)” or a generic “Server error, try again”.<br><b>Actual:</b> “<i>network Unable to connect. Please check your internet connection.</i>” while the connection is fine. <span class="ev">Evidence: A6, A6_oversized_body.png</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td><code>error.interceptor.ts</code> treats <i>any</i> response without an <code>errors</code> JSON object (413, 502 HTML pages, CORS failures) as a network failure. It should branch on <code>err.status</code> (0 = offline, 413, 5xx).</td></tr>
+
+<tr><td class="n">9</td><td><b>Editor has no client-side validation, and error text is cryptic</b></td>
+<td>1. <i>New Article</i> → click <i>Publish</i> with everything empty.<br>2. Enter a 250-character title → <i>Publish</i>.</td>
+<td><b>Expected:</b> required and max-length rules shown on the fields before submitting.<br><b>Actual:</b> <i>Publish</i> is always enabled. Errors only come back from the server, as raw strings like “<i>body title is a string of less than 100 chars</i>” (the 100-character limit is shown nowhere). <span class="ev">Evidence: A3, A5, A5_long_title_error.png</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td><code>editor.component.ts</code> creates its <code>FormControl</code>s with no validators and no <code>maxlength</code>. <code>ListErrorsComponent</code> prints <code>key + message</code> verbatim.</td></tr>
+
+<tr><td class="n">10</td><td><b>Double-clicking “Publish Article” sends two create requests</b></td>
+<td><i>New Article</i> → fill the form → double-click <i>Publish Article</i>.</td>
+<td><b>Expected:</b> exactly one request.<br><b>Actual:</b> 2 × <code>POST /articles</code> are sent. On a slow connection, impatient clicking causes duplicate posts or a confusing “slug taken” error. <span class="ev">Evidence: A7</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td><code>isSubmitting</code> disables the fieldset only after the next change-detection pass (OnPush and signals), so the second click is already queued. Guard in code with <code>if (isSubmitting()) return;</code>.</td></tr>
+
+<tr><td class="n">11</td><td><b>Signing in on a second device silently logs out the first one</b></td>
+<td>1. Log in in browser A.<br>2. Log in as the same user in browser B.<br>3. Go back to A and open <i>Settings</i>.</td>
+<td><b>Expected:</b> either multiple sessions are allowed, or A is told “you signed in elsewhere”.<br><b>Actual:</b> A's token now returns 401, and the app silently drops A to <code>/login</code>, losing any unsaved draft. <span class="ev">Evidence: L4, L4_first_session_kicked.png</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td>The backend issues one active token per user. <code>error.interceptor.ts</code> calls <code>purgeAuth()</code> on any 401, with no message and no attempt to keep the user's work.</td></tr>
+
+<tr><td class="n">12</td><td><b>Accessibility: form fields have no labels, the page has no language, and the tag “×” can't be used by keyboard</b></td>
+<td>Inspect <i>Sign up</i>, <i>New Article</i> and <i>Settings</i> with a screen reader or the Tab key.</td>
+<td><b>Expected:</b> every input has a <code>&lt;label&gt;</code> or <code>aria-label</code>, <code>&lt;html lang="en"&gt;</code>, and controls can be operated by keyboard.<br><b>Actual:</b> 3/3, 4/4 and 5/5 fields rely on placeholder text only. <code>lang</code> is missing. The remove-tag control is an <code>&lt;i&gt;</code> with only a click handler (tabIndex −1, no role). Fails WCAG 1.3.1, 2.1.1 and 3.1.1. <span class="ev">Evidence: AC-register, AC-editor, AC-settings, AC-tags</span></td>
+<td><span class="sev Medium">Medium</span></td>
+<td>The templates (<code>auth.component.html</code>, <code>editor.component.html</code>, <code>settings.component.html</code>, <code>index.html</code>) were written for looks only. Use <code>&lt;button aria-label="Remove tag"&gt;</code>.</td></tr>
+
+<tr><td class="n">13</td><td><b>Missing browser security headers on the frontend</b></td>
+<td><code>curl -I https://demo.realworld.show/</code></td>
+<td><b>Expected:</b> <code>Content-Security-Policy</code>, <code>X-Frame-Options</code>/<code>frame-ancestors</code>, HSTS, <code>X-Content-Type-Options</code>, <code>Referrer-Policy</code>.<br><b>Actual:</b> none are sent. The app can be framed (clickjacking risk), and there is no CSP to limit damage if an XSS slips through, which matters because the token is in <code>localStorage</code> (#5). <span class="ev">Evidence: X1</span></td>
+<td><span class="sev Low">Low</span></td>
+<td>Default nginx config with no security headers. Add them in the server block.</td></tr>
+
+<tr><td class="n">14</td><td><b>Tags are neither trimmed nor de-duplicated</b></td>
+<td><i>New Article</i> → enter the tags <code>qa</code>, <code>␣qa</code>, <code>qa␣</code>, <code>QA</code> (pressing Enter after each).</td>
+<td><b>Expected:</b> one tag, <code>qa</code>.<br><b>Actual:</b> 4 separate pills. The saved article has <code>["qa","QA","qa","testing"]</code>, which splits the tag sidebar and tag filtering. <span class="ev">Evidence: A2, A2_duplicate_tags.png</span></td>
+<td><span class="sev Low">Low</span></td>
+<td><code>editor.component.ts › addTag()</code> checks <code>tag.trim() !== ''</code> but then pushes the <i>untrimmed</i> value, and compares case-sensitively.</td></tr>
+
+<tr><td class="n">15</td><td><b>No “page not found”: unknown URLs and other users' edit links render empty screens</b></td>
+<td>Open <code>/this-page-does-not-exist</code>, or <code>/editor/&lt;someone-else's-slug&gt;</code>.</td>
+<td><b>Expected:</b> a 404 page, or “You can't edit this article”.<br><b>Actual:</b> a blank page with only the header and footer, or an empty editor with no explanation. <span class="ev">Evidence: N1, E3</span></td>
+<td><span class="sev Low">Low</span></td>
+<td><code>app.routes.ts</code> has no <code>**</code> wildcard route. <code>editor.component.ts</code> has no error handler on the article fetch and silently redirects non-authors.</td></tr>
+
+</tbody>
+</table>
+
+<h2>Root-cause analysis — #1: feed stuck on “Loading articles…” forever</h2>
+<p><b>What happens.</b> Whenever the articles API is slow, down or returns an error, the home page keeps showing “Loading articles…” (and “Loading tags…”) forever. The user sees no error, no retry option and no timeout. To them the site simply looks frozen, which is exactly the “it feels broken” complaint.</p>
+<p><b>Why.</b> In <code>src/app/features/article/components/article-list.component.ts</code>, <code>runQuery()</code> sets <code>loading = LOADING</code> and then subscribes to <code>articlesService.query()</code> with only a success callback. When the request fails, the global <code>errorInterceptor</code> normalises the error and re-throws it, but nothing catches it in this component. The stream dies, <code>loading</code> never leaves <code>LOADING</code>, and the template has no branch for a failure because <code>LoadingState</code> has no <code>ERROR</code> value. The tag sidebar uses the same pattern (<code>tags$</code> with only a <code>tap</code>), and nothing adds a timeout, so a hung connection also spins forever. It is a classic AI-generated-code gap: the happy path was written and demoed, and the failure path never existed.</p>
+<pre>// today
+this.articlesService.query(this.query).subscribe(data => { this.loading.set(LOADED); … });
+
+// fix
+this.articlesService.query(this.query).pipe(
+  timeout(10_000),
+  retry({ count: 2, delay: (_, n) =&gt; timer(500 * 2 ** n) }),   // GETs are safe to retry
+  takeUntilDestroyed(this.destroyRef),
+).subscribe({
+  next: data =&gt; { this.loading.set(LoadingState.LOADED); … },
+  error: () =&gt; this.loading.set(LoadingState.ERROR),            // template shows "Couldn't load articles · Retry"
+});</pre>
+<p><b>How I'd fix it.</b> Add an <code>ERROR</code> state with a “Couldn't load articles · Retry” message, a 10-second timeout, and two automatic retries with backoff (GET requests are safe to retry). Apply the same to <code>tags$</code>. Then add an e2e test that forces a 503 with <code>page.route()</code>, as check F1 does, so this can't regress. Longer term, a shared “remote data” helper (loading / empty / error / retry) for every list and page would also close #2, #6 and #15. Those bugs share the same root cause: error paths were never designed or tested.</p>
+
+<h2>Testing notes &amp; limitations</h2>
+<ul class="tight">
+  <li><b>Why the live demo.</b> The assessment's suggested <code>demo.realworld.io</code> returns 404 and the old API returns 530. The project moved to <code>realworld-apps</code>, and <code>demo.realworld.show</code> is its official replacement. Testing a live deployment also lets the bonus uptime monitor watch a real public URL.</li>
+  <li><b>Session isolation.</b> The demo backend deliberately isolates each client's data (“connected to a demo backend that enforces session isolation”). Two observations depend on that sandbox, so I logged them as INFO rather than bugs: (a) signing up with an already-used email is accepted, and the original password stops working; (b) after 12 rapid wrong passwords, even the correct one is rejected with the same “credentials invalid” message (never a 429). Both should be re-tested on a private backend. If they reproduce there, (a) is <b>Critical</b> (account takeover) and (b) is a silent lockout.</li>
+  <li><b>What passed.</b> Stored-XSS payloads in the title, description and markdown body were rendered harmless by Angular's sanitiser. Protected routes redirect to <code>/login</code> after logout. The API blocks editing another user's article. Wrong-password errors are clear. API latency was about 160–235 ms. A throttled 400 kbit/s, 400 ms network still rendered the feed in about 6.6 s.</li>
+  <li><b>Etiquette.</b> All test data used throwaway <code>qa_*@example.com</code> accounts on the public sandbox, which is meant for exactly this. Created articles were deleted at the end of the run, and the run sent only a handful of requests.</li>
+</ul>
+
+<h2 class="pb">Evidence (selected screenshots)</h2>
+<div class="shots">
+  <figure><img src="qa-tests/screenshots/F1_feed_stuck_loading.png"><figcaption>#1 — API returns 503: feed and tags stay on “Loading…” with no error or retry.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/D1_delete_failure_silent.png"><figcaption>#2 — DELETE failed (500): no message. The user is left on the page with greyed-out but still clickable buttons.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/N2_missing_article.png"><figcaption>#6 — missing article: blank page, because the error list is always empty.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/A6_oversized_body.png"><figcaption>#8 — large post: “check your internet connection” while online.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/A5_long_title_error.png"><figcaption>#9 — the title limit is only revealed by a garbled server message.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/A2_duplicate_tags.png"><figcaption>#14 — “qa”, “ qa”, “qa ” and “QA” become four separate tags.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/L4_first_session_kicked.png"><figcaption>#11 — the first browser is silently sent to Sign in after a login elsewhere.</figcaption></figure>
+  <figure><img src="qa-tests/screenshots/N1_unknown_route.png"><figcaption>#15 — unknown URL: an empty page, with no 404.</figcaption></figure>
+</div>
+
+</body>
+</html>
